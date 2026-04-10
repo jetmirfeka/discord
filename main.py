@@ -73,9 +73,14 @@ async def check_channel(ctx):
 async def on_ready():
     print(f"✅ Bot is online as {bot.user}")
     if TRELLO_CHANNEL_ID != 0:
-        channel = bot.get_channel(TRELLO_CHANNEL_ID)
-        if channel:
-            await channel.send("🤖 **Trello Bot është online dhe gati!**")
+        try:
+            channel = bot.get_channel(TRELLO_CHANNEL_ID)
+            if channel:
+                await channel.send("🤖 **Trello Bot është online dhe gati!**")
+            else:
+                print(f"⚠️ Channel {TRELLO_CHANNEL_ID} not found")
+        except Exception as e:
+            print(f"⚠️ Could not send startup message: {e}")
 
 # === DISCORD COMMANDS ===
 
