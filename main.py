@@ -61,11 +61,11 @@ def add_comment(card_id, comment):
         params={**AUTH, "text": comment}
     )
 
-def create_card(list_id, name):
-    res = requests.post(
-        f"{BASE_URL}/cards",
-        params={**AUTH, "idList": list_id, "name": name}
-    )
+def create_card(list_id, name, desc=None):
+    params = {**AUTH, "idList": list_id, "name": name}
+    if desc:
+        params["desc"] = desc
+    res = requests.post(f"{BASE_URL}/cards", params=params)
     return res.json()
 
 def get_board_members():
@@ -242,15 +242,20 @@ async def return_to_dev(ctx, *, args: str):
 
 @bot.command(name="add")
 async def add_card(ctx, *, args: str):
-    """!add <list name> | <card name> — Create a new card"""
+    """!add <list name> | <card name> | <description> — Create a new card"""
     if not await check_channel(ctx):
         return
 
-    if "|" not in args:
-        await ctx.send("❌ Perdor: `!add <emri i listes> | <emri i kartes>`")
+    parts = [x.strip() for x in args.split("|")]
+
+    if len(parts) < 2:
+        await ctx.send("❌ Perdor: `!add <lista> | <emri> | <pershkrimi (opsional)>`")
         return
 
-    list_name, card_name = [x.strip() for x in args.split("|", 1)]
+    list_name = parts[0]
+    card_name = parts[1]
+    desc = parts[2] if len(parts) >= 3 else None
+
     lists = get_lists()
 
     # Find matching list (case insensitive)
@@ -265,8 +270,11 @@ async def add_card(ctx, *, args: str):
         await ctx.send(f"❌ Lista **'{list_name}'** nuk u gjet.\n📋 Listat: {available}")
         return
 
-    card = create_card(matched_list[1], card_name)
-    await ctx.send(f"✅ Karta **'{card_name}'** u krijua te **{matched_list[0]}**!")
+    card = create_card(matched_list[1], card_name, desc)
+    msg = f"✅ Karta **'{card_name}'** u krijua te **{matched_list[0]}**!"
+    if desc:
+        msg += f"\n📝 Pershkrimi: {desc}"
+    await ctx.send(msg)
 
 @bot.command(name="move")
 async def move_card_cmd(ctx, *, args: str):
@@ -412,7 +420,7 @@ async def help_trello(ctx):
 📖 **Komandat e disponueshme:**
 
 **Menaxhimi i kartave:**
-`!add <lista> | <emri>` — Krijo karte te re
+`!add <lista> | <emri> | <pershkrimi>` — Krijo karte te re
 `!move <emri i kartes> | <lista>` — Zhvendos karte ne cfardo liste
 `!ready <emri i kartes>` — Zhvendos nga **In Progress** → **Testing**
 `!tested <emri i kartes>` — Zhvendos nga **Testing** → **Testing Done**
