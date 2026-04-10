@@ -61,6 +61,34 @@ def add_comment(card_id, comment):
         params={**AUTH, "text": comment}
     )
 
+def create_card(list_id, name):
+    res = requests.post(
+        f"{BASE_URL}/cards",
+        params={**AUTH, "idList": list_id, "name": name}
+    )
+    return res.json()
+
+def get_board_members():
+    res = requests.get(f"{BASE_URL}/boards/{BOARD_ID}/members", params=AUTH)
+    if res.ok:
+        return res.json()
+    return []
+
+def get_all_cards():
+    res = requests.get(f"{BASE_URL}/boards/{BOARD_ID}/cards", params={**AUTH, "members": "true"})
+    if res.ok:
+        return res.json()
+    return []
+
+def find_card(card_name, cards=None):
+    """Find a card by name across all lists."""
+    if cards is None:
+        cards = get_all_cards()
+    for card in cards:
+        if card["name"].lower() == card_name.lower():
+            return card
+    return None
+
 def get_list_name_by_id(list_id):
     res = requests.get(f"{BASE_URL}/lists/{list_id}", params=AUTH)
     if res.ok:
@@ -212,6 +240,69 @@ async def return_to_dev(ctx, *, args: str):
 
     await ctx.send(f"❌ Karta **'{card_name}'** nuk u gjet te 'Testing'.")
 
+@bot.command(name="add")
+async def add_card(ctx, *, args: str):
+    """!add <list name> | <card name> — Create a new card"""
+    if not await check_channel(ctx):
+        return
+
+    if "|" not in args:
+        await ctx.send("❌ Perdor: `!add <emri i listes> | <emri i kartes>`")
+        return
+
+    list_name, card_name = [x.strip() for x in args.split("|", 1)]
+    lists = get_lists()
+
+    # Find matching list (case insensitive)
+    matched_list = None
+    for name, lid in lists.items():
+        if name.lower() == list_name.lower():
+            matched_list = (name, lid)
+            break
+
+    if not matched_list:
+        available = ", ".join(lists.keys())
+        await ctx.send(f"❌ Lista **'{list_name}'** nuk u gjet.\n📋 Listat: {available}")
+        return
+
+    card = create_card(matched_list[1], card_name)
+    await ctx.send(f"✅ Karta **'{card_name}'** u krijua te **{matched_list[0]}**!")
+
+@bot.command(name="move")
+async def move_card_cmd(ctx, *, args: str):
+    """!move <card name> | <target list> — Move card to any list"""
+    if not await check_channel(ctx):
+        return
+
+    if "|" not in args:
+        await ctx.send("❌ Perdor: `!move <emri i kartes> | <emri i listes>`")
+        return
+
+    card_name, target_list = [x.strip() for x in args.split("|", 1)]
+    lists = get_lists()
+
+    # Find target list
+    matched_list = None
+    for name, lid in lists.items():
+        if name.lower() == target_list.lower():
+            matched_list = (name, lid)
+            break
+
+    if not matched_list:
+        available = ", ".join(lists.keys())
+        await ctx.send(f"❌ Lista **'{target_list}'** nuk u gjet.\n📋 Listat: {available}")
+        return
+
+    # Find card
+    card = find_card(card_name)
+    if not card:
+        await ctx.send(f"❌ Karta **'{card_name}'** nuk u gjet.")
+        return
+
+    move_card(card["id"], matched_list[1])
+    add_comment(card["id"], f"Moved to {matched_list[0]}")
+    await ctx.send(f"📦 **'{card_name}'** u zhvendos te **{matched_list[0]}**!")
+
 @bot.command(name="board")
 async def show_board(ctx):
     """!board — Show all cards per list"""
@@ -228,20 +319,113 @@ async def show_board(ctx):
 
     await ctx.send(message)
 
+@bot.command(name="members")
+async def show_members(ctx):
+    """!members — Show who is assigned to which cards"""
+    if not await check_channel(ctx):
+        return
+
+    cards = get_all_cards()
+    members = get_board_members()
+    member_map = {m["id"]: m["fullName"] for m in members}
+    lists = get_lists()
+    list_id_to_name = {v: k for k, v in lists.items()}
+
+    message = "👥 **Kartat dhe anetaret:**\n\n"
+    has_assignments = False
+
+    for card in cards:
+        if card.get("idMembers"):
+            has_assignments = True
+            assigned = ", ".join(member_map.get(mid, "Unknown") for mid in card["idMembers"])
+            list_name = list_id_to_name.get(card["idList"], "Unknown")
+            message += f"• **{card['name']}** ({list_name}) — {assigned}\n"
+
+    if not has_assignments:
+        message += "Asnje karte nuk ka anetar te caktuar."
+
+    await ctx.send(message)
+
+@bot.command(name="mytickets")
+async def my_tickets(ctx):
+    """!mytickets — Show your assigned cards"""
+    if not await check_channel(ctx):
+        return
+
+    cards = get_all_cards()
+    members = get_board_members()
+    lists = get_lists()
+    list_id_to_name = {v: k for k, v in lists.items()}
+
+    # Match Discord username to Trello member
+    discord_name = ctx.author.display_name.lower()
+    trello_member_id = None
+    for m in members:
+        if m["fullName"].lower() == discord_name or m["username"].lower() == discord_name:
+            trello_member_id = m["id"]
+            break
+
+    if not trello_member_id:
+        await ctx.send(f"❌ Nuk gjeta llogarine tende ne Trello. (Discord name: {ctx.author.display_name})\nSignohu qe emri ne Discord dhe Trello te jete i njejte.")
+        return
+
+    my_cards = [c for c in cards if trello_member_id in c.get("idMembers", [])]
+
+    if not my_cards:
+        await ctx.send("📭 Nuk ke asnje karte te caktuar.")
+        return
+
+    message = f"🎯 **Kartat e tua ({ctx.author.display_name}):**\n\n"
+    for card in my_cards:
+        list_name = list_id_to_name.get(card["idList"], "Unknown")
+        message += f"• **{card['name']}** — {list_name}\n"
+
+    await ctx.send(message)
+
+@bot.command(name="summary")
+async def show_summary(ctx):
+    """!summary — Show a quick summary of the board"""
+    if not await check_channel(ctx):
+        return
+
+    lists = get_lists()
+    message = "📊 **Board Summary:**\n\n"
+    total = 0
+
+    for list_name, list_id in lists.items():
+        cards = get_cards_in_list(list_id)
+        count = len(cards)
+        total += count
+        bar = "█" * count + "░" * (10 - min(count, 10))
+        message += f"**{list_name}**: {count} {bar}\n"
+
+    message += f"\n**Total: {total} karta**"
+    await ctx.send(message)
+
 @bot.command(name="help_trello")
 async def help_trello(ctx):
-    """!help_trello — Shfaq të gjitha komandat"""
+    """!help_trello — Shfaq te gjitha komandat"""
     if not await check_channel(ctx):
         return
 
     await ctx.send("""
 📖 **Komandat e disponueshme:**
 
-`!ready <emri i kartës>` — Zhvendos nga **In Progress** → **Testing**
-`!tested <emri i kartës>` — Zhvendos nga **Testing** → **Done**
-`!return <emri i kartës> | <arsyeja>` — Kthe nga **Testing** → **In Progress**
-`!board` — Shfaq të gjitha kartat
+**Menaxhimi i kartave:**
+`!add <lista> | <emri>` — Krijo karte te re
+`!move <emri i kartes> | <lista>` — Zhvendos karte ne cfardo liste
+`!ready <emri i kartes>` — Zhvendos nga **In Progress** → **Testing**
+`!tested <emri i kartes>` — Zhvendos nga **Testing** → **Testing Done**
+`!return <emri i kartes> | <arsyeja>` — Kthe nga **Testing** → **In Progress**
+
+**Informatat:**
+`!board` — Shfaq te gjitha kartat
+`!summary` — Permbledhje e boardit
+`!members` — Shfaq kush eshte assign ne karta
+`!mytickets` — Shfaq kartat e tua
 `!help_trello` — Shfaq komandat
+
+🔔 Boti poston automatikisht kur krijohet ose levizet nje karte ne Trello.
     """)
 
 # === RUN ===
