@@ -3,7 +3,8 @@ import requests
 import os
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from discord.ext import commands
+from discord.ext import commands, tasks
+from datetime import datetime, timezone
 
 # === CONFIG ===
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
@@ -60,6 +61,23 @@ def add_comment(card_id, comment):
         params={**AUTH, "text": comment}
     )
 
+def get_list_name_by_id(list_id):
+    res = requests.get(f"{BASE_URL}/lists/{list_id}", params=AUTH)
+    if res.ok:
+        return res.json().get("name", "Unknown")
+    return "Unknown"
+
+def get_board_actions():
+    """Get recent updateCard actions (card moves) from the board."""
+    params = {**AUTH, "filter": "updateCard:idList", "limit": 10}
+    res = requests.get(f"{BASE_URL}/boards/{BOARD_ID}/actions", params=params)
+    if res.ok:
+        return res.json()
+    return []
+
+# Track last checked time to avoid duplicate notifications
+last_check_time = None
+
 # === CHANNEL CHECK ===
 async def check_channel(ctx):
     if TRELLO_CHANNEL_ID != 0 and ctx.channel.id != TRELLO_CHANNEL_ID:
@@ -69,9 +87,52 @@ async def check_channel(ctx):
 
 # === DISCORD EVENTS ===
 
+@tasks.loop(seconds=30)
+async def check_trello_moves():
+    """Poll Trello every 30 seconds for card movements and post in Discord."""
+    global last_check_time
+    if TRELLO_CHANNEL_ID == 0:
+        return
+
+    channel = bot.get_channel(TRELLO_CHANNEL_ID)
+    if not channel:
+        return
+
+    try:
+        actions = get_board_actions()
+        now = datetime.now(timezone.utc)
+
+        for action in actions:
+            action_date = datetime.fromisoformat(action["date"].replace("Z", "+00:00"))
+
+            if last_check_time and action_date <= last_check_time:
+                continue
+
+            card_name = action["data"]["card"]["name"]
+            list_before = action["data"]["listBefore"]["name"]
+            list_after = action["data"]["listAfter"]["name"]
+            member = action["memberCreator"]["fullName"]
+
+            await channel.send(
+                f"📦 **{member}** moved **'{card_name}'**\n"
+                f"➡️ **{list_before}** → **{list_after}**"
+            )
+
+        last_check_time = now
+    except Exception as e:
+        print(f"⚠️ Error checking Trello moves: {e}")
+
+@check_trello_moves.before_loop
+async def before_check():
+    await bot.wait_until_ready()
+    global last_check_time
+    last_check_time = datetime.now(timezone.utc)
+
 @bot.event
 async def on_ready():
     print(f"✅ Bot is online as {bot.user}")
+    if not check_trello_moves.is_running():
+        check_trello_moves.start()
     if TRELLO_CHANNEL_ID != 0:
         try:
             channel = bot.get_channel(TRELLO_CHANNEL_ID)
@@ -113,7 +174,7 @@ async def mark_tested(ctx, *, card_name: str):
 
     for card in cards:
         if card["name"].lower() == card_name.lower():
-            move_card(card["id"], lists["Done"])
+            move_card(card["id"], lists["Testing Done"])
             add_comment(card["id"], "🎉 Testing passed.")
             await ctx.send(f"✅ **'{card_name}'** u zhvendos te **Done**!")
             return
