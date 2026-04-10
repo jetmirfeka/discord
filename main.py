@@ -68,8 +68,8 @@ def get_list_name_by_id(list_id):
     return "Unknown"
 
 def get_board_actions():
-    """Get recent updateCard actions (card moves) from the board."""
-    params = {**AUTH, "filter": "updateCard:idList", "limit": 10}
+    """Get recent actions (card moves and card creates) from the board."""
+    params = {**AUTH, "filter": "updateCard:idList,createCard", "limit": 20}
     res = requests.get(f"{BASE_URL}/boards/{BOARD_ID}/actions", params=params)
     if res.ok:
         return res.json()
@@ -108,15 +108,23 @@ async def check_trello_moves():
             if last_check_time and action_date <= last_check_time:
                 continue
 
+            action_type = action["type"]
             card_name = action["data"]["card"]["name"]
-            list_before = action["data"]["listBefore"]["name"]
-            list_after = action["data"]["listAfter"]["name"]
             member = action["memberCreator"]["fullName"]
 
-            await channel.send(
-                f"📦 **{member}** moved **'{card_name}'**\n"
-                f"➡️ **{list_before}** → **{list_after}**"
-            )
+            if action_type == "createCard":
+                list_name = action["data"]["list"]["name"]
+                await channel.send(
+                    f"🆕 **{member}** created **'{card_name}'**\n"
+                    f"📋 List: **{list_name}**"
+                )
+            elif action_type == "updateCard":
+                list_before = action["data"]["listBefore"]["name"]
+                list_after = action["data"]["listAfter"]["name"]
+                await channel.send(
+                    f"📦 **{member}** moved **'{card_name}'**\n"
+                    f"➡️ **{list_before}** → **{list_after}**"
+                )
 
         last_check_time = now
     except Exception as e:
